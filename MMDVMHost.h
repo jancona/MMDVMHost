@@ -23,10 +23,8 @@
 #include "POCSAGNetwork.h"
 #include "POCSAGControl.h"
 #include "DStarNetwork.h"
-#include "AX25Network.h"
 #include "NXDNNetwork.h"
 #include "DStarControl.h"
-#include "AX25Control.h"
 #include "DMRControl.h"
 #include "YSFControl.h"
 #include "P25Control.h"
@@ -70,7 +68,6 @@ private:
   CM17Control*    m_m17;
   CPOCSAGControl* m_pocsag;
   CFMControl*     m_fm;
-  CAX25Control*   m_ax25;
   CDStarNetwork*  m_dstarNetwork;
   IDMRNetwork*    m_dmrNetwork;
   CYSFNetwork*    m_ysfNetwork;
@@ -79,7 +76,6 @@ private:
   CM17Network*    m_m17Network;
   CPOCSAGNetwork* m_pocsagNetwork;
   CFMNetwork*     m_fmNetwork;
-  CAX25Network*   m_ax25Network;
   CDisplay*       m_display;
   unsigned char   m_mode;
   unsigned int    m_dstarRFModeHang;
@@ -110,7 +106,6 @@ private:
   bool            m_m17Enabled;
   bool            m_pocsagEnabled;
   bool            m_fmEnabled;
-  bool            m_ax25Enabled;
   unsigned int    m_cwIdTime;
   CDMRLookup*     m_dmrLookup;
   CNXDNLookup*    m_nxdnLookup;
@@ -132,14 +127,13 @@ private:
   bool createM17Network();
   bool createPOCSAGNetwork();
   bool createFMNetwork();
-  bool createAX25Network();
 
   void remoteControl();
   void processModeCommand(unsigned char mode, unsigned int timeout);
 
   void setMode(unsigned char mode);
   void enableModemMode(bool& mode, bool enabled);
-  void processEnableModeCommand(unsigned char mode, bool hasController, bool& modeEnabled, bool enableMode, bool isAX25 = false);
+  void processEnableModeCommand(unsigned char mode, bool hasController, bool& modeEnabled, bool enableMode);
 
   void createLockFile(const char* mode) const;
   void removeLockFile() const;

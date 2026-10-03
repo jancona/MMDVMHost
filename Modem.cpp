@@ -21,7 +21,6 @@
 #include "YSFDefines.h"
 #include "P25Defines.h"
 #include "NXDNDefines.h"
-#include "AX25Defines.h"
 #include "POCSAGDefines.h"
 #include "M17Defines.h"
 #include "Thread.h"
@@ -82,8 +81,6 @@ const unsigned char MMDVM_M17_EOT        = 0x49U;
 
 const unsigned char MMDVM_POCSAG_DATA = 0x50U;
 
-const unsigned char MMDVM_AX25_DATA   = 0x55U;
-
 const unsigned char MMDVM_FM_PARAMS1  = 0x60U;
 const unsigned char MMDVM_FM_PARAMS2  = 0x61U;
 const unsigned char MMDVM_FM_PARAMS3  = 0x62U;
@@ -119,7 +116,6 @@ const unsigned char CAP1_NXDN   = 0x10U;
 const unsigned char CAP1_M17    = 0x20U;
 const unsigned char CAP1_FM     = 0x40U;
 const unsigned char CAP2_POCSAG = 0x01U;
-const unsigned char CAP2_AX25   = 0x02U;
 
 
 CModem::CModem(bool duplex, bool rxInvert, bool txInvert, bool pttInvert, unsigned int txDelay, unsigned int dmrDelay, bool useCOSAsLockout, bool trace, bool debug) :
@@ -146,7 +142,6 @@ m_nxdnTXLevel(0.0F),
 m_m17TXLevel(0.0F),
 m_pocsagTXLevel(0.0F),
 m_fmTXLevel(0.0F),
-m_ax25TXLevel(0.0F),
 m_rfLevel(0.0F),
 m_useCOSAsLockout(useCOSAsLockout),
 m_trace(trace),
@@ -162,7 +157,6 @@ m_nxdnEnabled(false),
 m_m17Enabled(false),
 m_pocsagEnabled(false),
 m_fmEnabled(false),
-m_ax25Enabled(false),
 m_rxDCOffset(0),
 m_txDCOffset(0),
 m_port(nullptr),
@@ -188,8 +182,6 @@ m_txM17Data(1000U, "Modem TX M17"),
 m_txPOCSAGData(1000U, "Modem TX POCSAG"),
 m_rxFMData(5000U, "Modem RX FM"),
 m_txFMData(5000U, "Modem TX FM"),
-m_rxAX25Data(1000U, "Modem RX AX.25"),
-m_txAX25Data(1000U, "Modem TX AX.25"),
 m_rxSerialData(1000U, "Modem RX Serial"),
 m_txSerialData(1000U, "Modem TX Serial"),
 m_rxTransparentData(1000U, "Modem RX Transparent"),
@@ -207,17 +199,12 @@ m_nxdnSpace(0U),
 m_m17Space(0U),
 m_pocsagSpace(0U),
 m_fmSpace(0U),
-m_ax25Space(0U),
 m_tx(false),
 m_cd(false),
 m_lockout(false),
 m_error(false),
 m_mode(MODE_IDLE),
 m_hwType(HW_TYPE::UNKNOWN),
-m_ax25RXTwist(0),
-m_ax25TXDelay(300U),
-m_ax25SlotTime(30U),
-m_ax25PPersist(128U),
 m_fmCallsign(),
 m_fmCallsignSpeed(20U),
 m_fmCallsignFrequency(1000U),
@@ -254,7 +241,8 @@ m_fmExtAudioBoost(1U),
 m_fmMaxDevLevel(90.0F),
 m_fmExtEnable(false),
 m_capabilities1(0x00U),
-m_capabilities2(0x00U)
+m_capabilities2(0x00U),
+m_serialDataLen(0U)
 {
 	m_buffer = new unsigned char[BUFFER_LENGTH];
 }
@@ -282,7 +270,7 @@ void CModem::setRFParams(unsigned int rxFrequency, int rxOffset, unsigned int tx
 	m_pocsagFrequency = pocsagFrequency + txOffset;
 }
 
-void CModem::setModeParams(bool dstarEnabled, bool dmrEnabled, bool ysfEnabled, bool p25Enabled, bool nxdnEnabled, bool m17Enabled, bool pocsagEnabled, bool fmEnabled, bool ax25Enabled)
+void CModem::setModeParams(bool dstarEnabled, bool dmrEnabled, bool ysfEnabled, bool p25Enabled, bool nxdnEnabled, bool m17Enabled, bool pocsagEnabled, bool fmEnabled)
 {
 	m_dstarEnabled  = dstarEnabled;
 	m_dmrEnabled    = dmrEnabled;
@@ -292,10 +280,9 @@ void CModem::setModeParams(bool dstarEnabled, bool dmrEnabled, bool ysfEnabled, 
 	m_m17Enabled    = m17Enabled;
 	m_pocsagEnabled = pocsagEnabled;
 	m_fmEnabled     = fmEnabled;
-	m_ax25Enabled   = ax25Enabled;
 }
 
-void CModem::setLevels(float rxLevel, float cwIdTXLevel, float dstarTXLevel, float dmrTXLevel, float ysfTXLevel, float p25TXLevel, float nxdnTXLevel, float m17TXLevel, float pocsagTXLevel, float fmTXLevel, float ax25TXLevel)
+void CModem::setLevels(float rxLevel, float cwIdTXLevel, float dstarTXLevel, float dmrTXLevel, float ysfTXLevel, float p25TXLevel, float nxdnTXLevel, float m17TXLevel, float pocsagTXLevel, float fmTXLevel)
 {
 	m_rxLevel       = rxLevel;
 	m_cwIdTXLevel   = cwIdTXLevel;
@@ -307,7 +294,6 @@ void CModem::setLevels(float rxLevel, float cwIdTXLevel, float dstarTXLevel, flo
 	m_m17TXLevel    = m17TXLevel;
 	m_pocsagTXLevel = pocsagTXLevel;
 	m_fmTXLevel     = fmTXLevel;
-	m_ax25TXLevel   = ax25TXLevel;
 }
 
 void CModem::setDMRParams(unsigned int colorCode)
@@ -338,13 +324,6 @@ void CModem::setM17Params(unsigned int txHang)
 	m_m17TXHang = txHang;
 }
 
-void CModem::setAX25Params(int rxTwist, unsigned int txDelay, unsigned int slotTime, unsigned int pPersist)
-{
-	m_ax25RXTwist  = rxTwist;
-	m_ax25TXDelay  = txDelay;
-	m_ax25SlotTime = slotTime;
-	m_ax25PPersist = pPersist;
-}
 
 void CModem::setTransparentDataParams(unsigned int sendFrameType)
 {
@@ -758,17 +737,6 @@ void CModem::clock(unsigned int ms)
 			}
 			break;
 
-			case MMDVM_AX25_DATA: {
-				if (m_trace)
-					CUtils::dump(1U, "RX AX.25 Data", m_buffer, m_length);
-
-				unsigned int data = m_length - m_offset;
-				m_rxAX25Data.addData((unsigned char*)&data, sizeof(unsigned int));
-
-				m_rxAX25Data.addData(m_buffer + m_offset, m_length - m_offset);
-			}
-			break;
-
 			case MMDVM_GET_STATUS:
 				// if (m_trace)
 				//	CUtils::dump(1U, "GET_STATUS", m_buffer, m_length);
@@ -798,7 +766,6 @@ void CModem::clock(unsigned int ms)
 						m_m17Space    = 0U;
 						m_pocsagSpace = 0U;
 						m_fmSpace     = 0U;
-						m_ax25Space   = 0U;
 
 						m_dstarSpace = m_buffer[m_offset + 3U];
 						m_dmrSpace1  = m_buffer[m_offset + 4U];
@@ -845,7 +812,6 @@ void CModem::clock(unsigned int ms)
 						m_m17Space    = m_buffer[m_offset + 9U];
 						m_fmSpace     = m_buffer[m_offset + 10U];
 						m_pocsagSpace = m_buffer[m_offset + 11U];
-						m_ax25Space   = m_buffer[m_offset + 12U];
 					}
 					break;
 
@@ -859,12 +825,11 @@ void CModem::clock(unsigned int ms)
 					m_m17Space    = 0U;
 					m_pocsagSpace = 0U;
 					m_fmSpace     = 0U;
-					m_ax25Space   = 0U;
 					break;
 				}
 
 				m_inactivityTimer.start();
-				// LogMessage("status=%02X, tx=%d, space=%u,%u,%u,%u,%u,%u,%u,%u,%u,%u lockout=%d, cd=%d", m_buffer[m_offset + 2U], int(m_tx), m_dstarSpace, m_dmrSpace1, m_dmrSpace2, m_ysfSpace, m_p25Space, m_nxdnSpace, m_m17Space, m_pocsagSpace, m_fmSpace, m_ax25Space, int(m_lockout), int(m_cd));
+				// LogMessage("status=%02X, tx=%d, space=%u,%u,%u,%u,%u,%u,%u,%u,%u lockout=%d, cd=%d", m_buffer[m_offset + 2U], int(m_tx), m_dstarSpace, m_dmrSpace1, m_dmrSpace2, m_ysfSpace, m_p25Space, m_nxdnSpace, m_m17Space, m_pocsagSpace, m_fmSpace, int(m_lockout), int(m_cd));
 				break;
 
 			case MMDVM_TRANSPARENT: {
@@ -898,10 +863,61 @@ void CModem::clock(unsigned int ms)
 				printDebug();
 				break;
 
+			//case MMDVM_SERIAL_DATA:
+			//	if (m_trace)
+			//		CUtils::dump(1U, "RX Serial Data", m_buffer, m_length);
+			//	m_rxSerialData.addData(m_buffer + m_offset, m_length - m_offset);
+			//	break;
+
+			// Code changed to bring the Nextion Button Pushes back to life
 			case MMDVM_SERIAL_DATA:
 				if (m_trace)
 					CUtils::dump(1U, "RX Serial Data", m_buffer, m_length);
+				
+				// Original: Add to serial data buffer
 				m_rxSerialData.addData(m_buffer + m_offset, m_length - m_offset);
+				
+				// NEW: Buffer serial data and forward complete commands as transparent data
+				{
+					// Add received bytes to our accumulation buffer
+					for (unsigned int i = 0; i < (m_length - m_offset); i++) {
+						if (m_serialDataLen < 256) {
+							m_serialDataBuffer[m_serialDataLen++] = m_buffer[m_offset + i];
+							
+							// Check for Nextion command terminator (0xFF 0xFF 0xFF)
+							if (m_serialDataLen >= 3 && 
+								m_serialDataBuffer[m_serialDataLen - 3] == 0xFF &&
+								m_serialDataBuffer[m_serialDataLen - 2] == 0xFF &&
+								m_serialDataBuffer[m_serialDataLen - 1] == 0xFF) {
+								
+								// We have a complete command
+								// Add it to the RX transparent data queue so it will be forwarded to NextionDriver
+								// With sendFrameType=1, we need to include the frame type byte
+								
+								// Create a buffer with frame type byte + command data
+								unsigned char frameBuffer[260];
+								frameBuffer[0] = 0x90;  // Frame type: transparent data
+								::memcpy(frameBuffer + 1, m_serialDataBuffer, m_serialDataLen);
+								
+								// Add length byte and data with frame type to RX queue
+								unsigned char len = m_serialDataLen + 1U;  // +1 for frame type byte
+								m_rxTransparentData.addData(&len, 1U);
+								m_rxTransparentData.addData(frameBuffer, len);
+								
+								if (m_trace) {
+									CUtils::dump(1U, "Adding button command with frame type to RX Transparent queue", frameBuffer, len);
+								}
+								
+								// Reset buffer for next command
+								m_serialDataLen = 0U;
+							}
+						} else {
+							// Buffer overflow, reset
+							LogWarning("Serial data buffer overflow, resetting");
+							m_serialDataLen = 0U;
+						}
+					}
+				}
 				break;
 
 			default:
@@ -1108,23 +1124,6 @@ void CModem::clock(unsigned int ms)
 		m_fmSpace--;
 	}
 
-	if (m_ax25Space > 0U && !m_txAX25Data.isEmpty()) {
-		unsigned int len = 0U;
-		m_txAX25Data.getData((unsigned char*)&len, sizeof(unsigned int));
-		m_txAX25Data.getData(m_buffer, len);
-
-		if (m_trace)
-			CUtils::dump(1U, "TX AX.25 Data", m_buffer, len);
-
-		int ret = m_port->write(m_buffer, len);
-		if (ret != int(len))
-			LogWarning("Error when writing AX.25 data to the MMDVM");
-
-		m_playoutTimer.start();
-
-		m_ax25Space = 0U;
-	}
-
 	if (!m_txTransparentData.isEmpty()) {
 		unsigned char len = 0U;
 		m_txTransparentData.getData(&len, 1U);
@@ -1269,20 +1268,6 @@ unsigned int CModem::readFMData(unsigned char* data)
 	unsigned int len = 0U;
 	m_rxFMData.getData((unsigned char*)&len, sizeof(unsigned int));
 	m_rxFMData.getData(data, len);
-
-	return len;
-}
-
-unsigned int CModem::readAX25Data(unsigned char* data)
-{
-	assert(data != nullptr);
-
-	if (m_rxAX25Data.isEmpty())
-		return 0U;
-
-	unsigned int len = 0U;
-	m_rxAX25Data.getData((unsigned char*)&len, sizeof(unsigned int));
-	m_rxAX25Data.getData(data, len);
 
 	return len;
 }
@@ -1608,42 +1593,6 @@ bool CModem::writeFMData(const unsigned char* data, unsigned int length)
 	return true;
 }
 
-bool CModem::hasAX25Space() const
-{
-	unsigned int space = m_txAX25Data.freeSpace() / (AX25_MAX_FRAME_LENGTH_BYTES + 5U);
-
-	return space > 1U;
-}
-
-bool CModem::writeAX25Data(const unsigned char* data, unsigned int length)
-{
-	assert(data != nullptr);
-	assert(length > 0U);
-
-	unsigned char buffer[500U];
-
-	unsigned int len;
-	if (length > 252U) {
-		buffer[0U] = MMDVM_FRAME_START;
-		buffer[1U] = 0U;
-		buffer[2U] = (length + 4U) - 255U;
-		buffer[3U] = MMDVM_AX25_DATA;
-		::memcpy(buffer + 4U, data, length);
-		len = length + 4U;
-	} else {
-		buffer[0U] = MMDVM_FRAME_START;
-		buffer[1U] = length + 3U;
-		buffer[2U] = MMDVM_AX25_DATA;
-		::memcpy(buffer + 3U, data, length);
-		len = length + 3U;
-	}
-
-	m_txAX25Data.addData((unsigned char*)&len, sizeof(unsigned int));
-	m_txAX25Data.addData(buffer, len);
-
-	return true;
-}
-
 bool CModem::writeTransparentData(const unsigned char* data, unsigned int length)
 {
 	assert(data != nullptr);
@@ -1960,11 +1909,6 @@ bool CModem::hasPOCSAG() const
 	return (m_capabilities2 & CAP2_POCSAG) == CAP2_POCSAG;
 }
 
-bool CModem::hasAX25() const
-{
-	return (m_capabilities2 & CAP2_AX25) == CAP2_AX25;
-}
-
 unsigned int CModem::getVersion() const
 {
 	return m_protocolVersion;
@@ -2067,8 +2011,6 @@ bool CModem::readVersion()
 						::strcat(modeText, " FM");
 					if (hasPOCSAG())
 						::strcat(modeText, " POCSAG");
-					if (hasAX25())
-						::strcat(modeText, " AX.25");
 					LogInfo(modeText);
 					return true;
 
@@ -2278,8 +2220,6 @@ bool CModem::setConfig2()
 	buffer[5U] = 0x00U;
 	if (m_pocsagEnabled)
 		buffer[5U] |= 0x01U;
-	if (m_ax25Enabled)
-		buffer[5U] |= 0x02U;
 
 	buffer[6U] = m_txDelay / 10U;		// In 10ms units
 
@@ -2299,7 +2239,7 @@ bool CModem::setConfig2()
 	buffer[17U] = (unsigned char)(m_m17TXLevel * 2.55F + 0.5F);
 	buffer[18U] = (unsigned char)(m_pocsagTXLevel * 2.55F + 0.5F);
 	buffer[19U] = (unsigned char)(m_fmTXLevel * 2.55F + 0.5F);
-	buffer[20U] = (unsigned char)(m_ax25TXLevel * 2.55F + 0.5F);
+	buffer[20U] = 0x00U;
 	buffer[21U] = 0x00U;
 	buffer[22U] = 0x00U;
 
@@ -2313,10 +2253,10 @@ bool CModem::setConfig2()
 	buffer[29U] = m_dmrColorCode;
 	buffer[30U] = m_dmrDelay;
 
-	buffer[31U] = (unsigned char)(m_ax25RXTwist + 128);
-	buffer[32U] = m_ax25TXDelay / 10U;		// In 10ms units
-	buffer[33U] = m_ax25SlotTime / 10U;		// In 10ms units
-	buffer[34U] = m_ax25PPersist;
+	buffer[31U] = 128U;
+	buffer[32U] = 0x00U;
+	buffer[33U] = 0x00U;
+	buffer[34U] = 0x00U;
 
 	buffer[35U] = 0x00U;
 	buffer[36U] = 0x00U;
