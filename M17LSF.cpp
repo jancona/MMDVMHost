@@ -21,6 +21,8 @@
 #include "M17Defines.h"
 #include "M17CRC.h"
 
+#if defined(USE_M17)
+
 #include <cassert>
 #include <cstring>
 
@@ -218,3 +220,6 @@ CM17LSF& CM17LSF::operator=(const CM17LSF& lsf)
 
 	return *this;
 }
+
+#endif
+

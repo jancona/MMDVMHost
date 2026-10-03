@@ -15,6 +15,8 @@
 #include "DMRTA.h"
 #include "Log.h"
 
+#if defined(USE_DMR)
+
 #include <cstring>
 #include <cassert>
 
@@ -80,7 +82,7 @@ bool CDMRTA::decodeTA()
 
 				for (unsigned int i = 0U; (i < 32U) && (t2 < taSize); i++) {
 					for (int j = 7; j >= 0; j--) {
-						c = (c << 1U) | (b[i] >> j);
+						c = (c << 1U) | ((b[i] >> j) & 1U);
 
 						if (++t1 == 7U) {
 							if (i > 0U)
@@ -133,4 +135,6 @@ bool CDMRTA::decodeTA()
 
 	return taLen >= taSize;
 }
+
+#endif
 

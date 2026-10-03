@@ -1,5 +1,6 @@
 /*
- *	Copyright (C) 2015-2021,2025 Jonathan Naylor, G4KLX
+ *	Copyright (C) 2015-2021,2023,2025 Jonathan Naylor, G4KLX
+ *	Copyright (C) 2026 Adrian Musceac, YO8RZZ
  *
  *	This program is free software; you can redistribute it and/or modify
  *	it under the terms of the GNU General Public License as published by
@@ -13,15 +14,16 @@
 
 #include "DMRControl.h"
 #include "DMRAccessControl.h"
-#include "Defines.h"
 #include "DMRCSBK.h"
 #include "Log.h"
+
+#if defined(USE_DMR)
 
 #include <cstdio>
 #include <cassert>
 #include <algorithm>
 
-CDMRControl::CDMRControl(unsigned int id, unsigned int colorCode, unsigned int callHang, bool selfOnly, bool embeddedLCOnly, bool dumpTAData, const std::vector<unsigned int>& prefixes, const std::vector<unsigned int>& blacklist, const std::vector<unsigned int>& whitelist, const std::vector<unsigned int>& slot1TGWhitelist, const std::vector<unsigned int>& slot2TGWhitelist, unsigned int timeout, CModem* modem, IDMRNetwork* network, CDisplay* display, bool duplex, CDMRLookup* lookup, CRSSIInterpolator* rssi, unsigned int jitter, DMR_OVCM ovcm, bool protect) :
+CDMRControl::CDMRControl(unsigned int id, unsigned int colorCode, unsigned int callHang, bool selfOnly, bool embeddedLCOnly, bool dumpTAData, const std::vector<unsigned int>& prefixes, const std::vector<unsigned int>& blacklist, const std::vector<unsigned int>& whitelist, const std::vector<unsigned int>& slot1TGWhitelist, const std::vector<unsigned int>& slot2TGWhitelist, unsigned int timeout, CModem* modem, CDMRNetwork* network, bool duplex, CDMRLookup* lookup, CRSSIInterpolator* rssi, unsigned int jitter, DMR_OVCM ovcm, bool protect) :
 m_colorCode(colorCode),
 m_modem(modem),
 m_network(network),
@@ -31,14 +33,13 @@ m_lookup(lookup)
 {
 	assert(id != 0U);
 	assert(modem != nullptr);
-	assert(display != nullptr);
 	assert(lookup != nullptr);
 	assert(rssi != nullptr);
 
 	// Load black and white lists to DMRAccessControl
 	CDMRAccessControl::init(blacklist, whitelist, slot1TGWhitelist, slot2TGWhitelist, selfOnly, prefixes, id);
 
-	CDMRSlot::init(colorCode, embeddedLCOnly, dumpTAData, callHang, modem, network, display, duplex, m_lookup, rssi, jitter, ovcm, protect);
+	CDMRSlot::init(colorCode, embeddedLCOnly, dumpTAData, callHang, modem, network, duplex, m_lookup, rssi, jitter, ovcm, protect);
 }
 
 CDMRControl::~CDMRControl()
@@ -108,13 +109,30 @@ void CDMRControl::clock()
 {
 	if (m_network != nullptr) {
 		CDMRData data;
-		bool ret = m_network->read(data);
+		TrunkingCommandParameters command;
+		bool ret = m_network->read(data, command);
 		if (ret) {
-			unsigned int slotNo = data.getSlotNo();
-			switch (slotNo) {
-				case 1U: m_slot1.writeNetwork(data); break;
-				case 2U: m_slot2.writeNetwork(data); break;
-				default: LogError("Invalid slot no %u", slotNo); break;
+			if (m_modem->getDMRTrunkingEnabled() && command.trunkingParams) {
+				if (command.commandType == DMRCommand::ChannelEnableDisable) {
+					if (command.slot == 1U) {
+						if (!m_modem->getDMRControlChannel())
+							m_slot1.enable(command.channelEnable);
+					} else {
+						m_slot2.enable(command.channelEnable);
+					}
+				} else {
+					if (command.slot == 1U)
+						m_slot1.setRCCommand(command.commandType);
+					else
+						m_slot2.setRCCommand(command.commandType);
+				}
+			} else {
+				unsigned int slotNo = data.getSlotNo();
+				switch (slotNo) {
+					case 1U: m_slot1.writeNetwork(data); break;
+					case 2U: m_slot2.writeNetwork(data); break;
+					default: LogError("Invalid slot no: %u", slotNo); break;
+				}
 			}
 		}
 	}
@@ -136,3 +154,5 @@ void CDMRControl::enable(bool enabled)
 	m_slot1.enable(enabled);
 	m_slot2.enable(enabled);
 }
+
+#endif

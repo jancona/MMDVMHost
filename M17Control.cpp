@@ -1,5 +1,5 @@
 /*
- *	Copyright (C) 2020,2021,2023,2025 Jonathan Naylor, G4KLX
+ *	Copyright (C) 2020-2023,2025 Jonathan Naylor, G4KLX
  *
  *	This program is free software; you can redistribute it and/or modify
  *	it under the terms of the GNU General Public License as published by
@@ -19,6 +19,8 @@
 #include "Utils.h"
 #include "Sync.h"
 #include "Log.h"
+
+#if defined(USE_M17)
 
 #include <cstdio>
 #include <cassert>
@@ -50,20 +52,20 @@ const unsigned char SCRAMBLER[] = {
 	0x5DU, 0x0CU, 0xC8U, 0x52U, 0x43U, 0x91U, 0x1DU, 0xF8U, 0x6EU, 0x68U, 0x2FU, 0x35U, 0xDAU, 0x14U, 0xEAU, 0xCDU, 0x76U,
 	0x19U, 0x8DU, 0xD5U, 0x80U, 0xD1U, 0x33U, 0x87U, 0x13U, 0x57U, 0x18U, 0x2DU, 0x29U, 0x78U, 0xC3U};
 
-// #define	DUMP_M17
+const unsigned int RSSI_COUNT   = 25U;			// 25 * 40ms = 1000ms
+const unsigned int BER_COUNT    = 25U * 272U;		// 25 * 40ms = 1000ms
 
 const unsigned char BIT_MASK_TABLE[] = { 0x80U, 0x40U, 0x20U, 0x10U, 0x08U, 0x04U, 0x02U, 0x01U };
 
 #define WRITE_BIT(p,i,b) p[(i)>>3] = (b) ? (p[(i)>>3] | BIT_MASK_TABLE[(i)&7]) : (p[(i)>>3] & ~BIT_MASK_TABLE[(i)&7])
 #define READ_BIT(p,i)    (p[(i)>>3] & BIT_MASK_TABLE[(i)&7])
 
-CM17Control::CM17Control(const std::string& callsign, unsigned int can, bool selfOnly, bool allowEncryption, CM17Network* network, CDisplay* display, unsigned int timeout, bool duplex, CRSSIInterpolator* rssiMapper) :
+CM17Control::CM17Control(const std::string& callsign, unsigned int can, bool selfOnly, bool allowEncryption, CM17Network* network, unsigned int timeout, bool duplex, CRSSIInterpolator* rssiMapper) :
 m_callsign(callsign),
 m_can(can),
 m_selfOnly(selfOnly),
 m_allowEncryption(allowEncryption),
 m_network(network),
-m_display(display),
 m_duplex(duplex),
 m_queue(5000U, "M17 Control"),
 m_source(),
@@ -91,15 +93,17 @@ m_netTextBits(0x00U),
 m_rfText(nullptr),
 m_netText(nullptr),
 m_rssiMapper(rssiMapper),
-m_rssi(0U),
-m_maxRSSI(0U),
-m_minRSSI(0U),
-m_aveRSSI(0U),
+m_rssi(0),
+m_maxRSSI(0),
+m_minRSSI(0),
+m_aveRSSI(0),
+m_rssiCountTotal(0U),
+m_rssiAccum(0),
 m_rssiCount(0U),
-m_enabled(true),
-m_fp(nullptr)
+m_bitsCount(0U),
+m_bitErrsAccum(0U),
+m_enabled(true)
 {
-	assert(display != nullptr);
 	assert(rssiMapper != nullptr);
 
 	m_rfText  = new char[4U * M17_META_LENGTH_BYTES];
@@ -122,10 +126,13 @@ bool CM17Control::writeModem(unsigned char* data, unsigned int len)
 	unsigned char type = data[0U];
 
 	if (type == TAG_LOST && (m_rfState == RPT_RF_STATE::AUDIO || m_rfState == RPT_RF_STATE::DATA_AUDIO)) {
-		if (m_rssi != 0U)
-			LogMessage("M17, transmission lost from %s to %s, %.1f seconds, BER: %.1f%%, RSSI: -%u/-%u/-%u dBm", m_source.c_str(), m_dest.c_str(), float(m_rfFrames) / 25.0F, float(m_rfErrs * 100U) / float(m_rfBits), m_minRSSI, m_maxRSSI, m_aveRSSI / m_rssiCount);
-		else
+		if (m_rssi != 0) {
+			LogMessage("M17, transmission lost from %s to %s, %.1f seconds, BER: %.1f%%, RSSI: %d/%d/%d dBm", m_source.c_str(), m_dest.c_str(), float(m_rfFrames) / 25.0F, float(m_rfErrs * 100U) / float(m_rfBits), m_minRSSI, m_maxRSSI, m_aveRSSI / int(m_rssiCountTotal));
+			writeJSONRF("lost", float(m_rfFrames) / 25.0F, float(m_rfErrs * 100U) / float(m_rfBits), m_minRSSI, m_maxRSSI, m_aveRSSI / int(m_rssiCountTotal));
+		} else {
 			LogMessage("M17, transmission lost from %s to %s, %.1f seconds, BER: %.1f%%", m_source.c_str(), m_dest.c_str(), float(m_rfFrames) / 25.0F, float(m_rfErrs * 100U) / float(m_rfBits));
+			writeJSONRF("lost", float(m_rfFrames) / 25.0F, float(m_rfErrs * 100U) / float(m_rfBits));
+		}
 		writeEndRF();
 		return false;
 	}
@@ -152,19 +159,19 @@ bool CM17Control::writeModem(unsigned char* data, unsigned int len)
 		raw |= (data[51U] << 0) & 0x00FFU;
 
 		// Convert the raw RSSI to dBm
-		int rssi = m_rssiMapper->interpolate(raw);
-		if (rssi != 0)
-			LogDebug("M17, raw RSSI: %u, reported RSSI: %d dBm", raw, rssi);
+		m_rssi = m_rssiMapper->interpolate(raw);
+		if (m_rssi != 0)
+			LogDebug("M17, raw RSSI: %u, reported RSSI: %d dBm", raw, m_rssi);
 
-		// RSSI is always reported as positive
-		m_rssi = (rssi >= 0) ? rssi : -rssi;
-
-		if (m_rssi > m_minRSSI)
+		if (m_rssi < m_minRSSI)
 			m_minRSSI = m_rssi;
-		if (m_rssi < m_maxRSSI)
+		if (m_rssi > m_maxRSSI)
 			m_maxRSSI = m_rssi;
 
 		m_aveRSSI += m_rssi;
+		m_rssiCountTotal++;
+
+		m_rssiAccum += m_rssi;
 		m_rssiCount++;
 	}
 
@@ -196,20 +203,27 @@ bool CM17Control::writeModem(unsigned char* data, unsigned int len)
 			m_rfFrames   = 0U;
 			m_rfErrs     = ber;
 			m_rfBits     = 368U;
+
 			m_rfCollectingLSF.reset();
 			m_rfCollectedLSF.reset();
 			m_rfTimeoutTimer.start();
+
 			m_minRSSI    = m_rssi;
 			m_maxRSSI    = m_rssi;
 			m_aveRSSI    = m_rssi;
-			m_rssiCount  = 1U;
+			m_rssiCountTotal  = 1U;
+
+			m_rssiAccum = m_rssi;
+			m_rssiCount = 1U;
+
+			m_bitErrsAccum = 0U;
+			m_bitsCount    = 0U;
+
 			m_rfLSFn     = 0U;
 			m_rfLSFCount = 0U;
 			m_rfTextBits = 0x00U;
 			::memset(m_rfText, 0x00U, 4U * M17_META_LENGTH_BYTES);
-#if defined(DUMP_M17)
-			openFile();
-#endif
+
 			return true;
 		} else {
 			m_rfState = RPT_RF_STATE::LATE_ENTRY;
@@ -251,19 +265,26 @@ bool CM17Control::writeModem(unsigned char* data, unsigned int len)
 			m_rfFrames   = 0U;
 			m_rfErrs     = 0U;
 			m_rfBits     = 1U;
+
 			m_rfCollectingLSF.reset();
 			m_rfCollectedLSF.reset();
 			m_rfTimeoutTimer.start();
+
 			m_minRSSI    = m_rssi;
 			m_maxRSSI    = m_rssi;
 			m_aveRSSI    = m_rssi;
-			m_rssiCount  = 1U;
+			m_rssiCountTotal  = 1U;
+
+			m_rssiAccum = m_rssi;
+			m_rssiCount = 1U;
+
+			m_bitErrsAccum = 0U;
+			m_bitsCount    = 0U;
+
 			m_rfLSFCount = 0U;
 			m_rfTextBits = 0x00U;
 			::memset(m_rfText, 0x00U, 4U * M17_META_LENGTH_BYTES);
-#if defined(DUMP_M17)
-			openFile();
-#endif
+
 			// Fall through
 		} else {
 			return false;
@@ -271,9 +292,6 @@ bool CM17Control::writeModem(unsigned char* data, unsigned int len)
 	}
 
 	if (((m_rfState == RPT_RF_STATE::AUDIO) || (m_rfState == RPT_RF_STATE::DATA_AUDIO)) && (data[0U] == TAG_DATA)) {
-#if defined(DUMP_M17)
-		writeFile(data + 2U);
-#endif
 		// Keep looking at the running LSF in case of changed META field data
 		unsigned int lich1, lich2, lich3, lich4;
 		bool valid1 = CGolay24128::decode24128(data + 2U + M17_SYNC_LENGTH_BYTES + 0U, lich1);
@@ -322,6 +340,7 @@ bool CM17Control::writeModem(unsigned char* data, unsigned int len)
 
 					if (m_rfTextBits == 0x11U || m_rfTextBits == 0x33U || m_rfTextBits == 0x77U || m_rfTextBits == 0xFFU) {
 						LogMessage("M17, text Data: \"%s\"", m_rfText);
+						writeJSONText(m_rfText);
 						m_rfTextBits = 0x00U;
 					}
 				}
@@ -356,8 +375,11 @@ bool CM17Control::writeModem(unsigned char* data, unsigned int len)
 		m_rfBits += 272U;
 		m_rfErrs += errors;
 
-		float ber = float(m_rfErrs) / float(m_rfBits);
-		m_display->writeM17BER(ber);
+		m_bitErrsAccum += errors;
+		m_bitsCount    += 272U;
+
+		writeJSONBER();
+		writeJSONRSSI();
 
 		if (m_duplex) {
 			unsigned char rfData[2U + M17_FRAME_LENGTH_BYTES];
@@ -420,9 +442,6 @@ bool CM17Control::writeModem(unsigned char* data, unsigned int len)
 	}
 
 	if (((m_rfState == RPT_RF_STATE::AUDIO) || (m_rfState == RPT_RF_STATE::DATA_AUDIO)) && (data[0U] == TAG_EOT)) {
-#if defined(DUMP_M17)
-		writeFile(data + 2U);
-#endif
 		if (m_duplex) {
 			unsigned char rfData[M17_FRAME_LENGTH_BYTES + 2U];
 
@@ -461,10 +480,13 @@ bool CM17Control::writeModem(unsigned char* data, unsigned int len)
 			m_network->write(netData);
 		}
 
-		if (m_rssi != 0U)
-			LogMessage("M17, received RF end of transmission from %s to %s, %.1f seconds, BER: %.1f%%, RSSI: -%u/-%u/-%u dBm", m_source.c_str(), m_dest.c_str(), float(m_rfFrames) / 25.0F, float(m_rfErrs * 100U) / float(m_rfBits), m_minRSSI, m_maxRSSI, m_aveRSSI / m_rssiCount);
-		else
+		if (m_rssi != 0) {
+			LogMessage("M17, received RF end of transmission from %s to %s, %.1f seconds, BER: %.1f%%, RSSI: %d/%d/%d dBm", m_source.c_str(), m_dest.c_str(), float(m_rfFrames) / 25.0F, float(m_rfErrs * 100U) / float(m_rfBits), m_minRSSI, m_maxRSSI, m_aveRSSI / int(m_rssiCountTotal));
+			writeJSONRF("end", float(m_rfFrames) / 25.0F, float(m_rfErrs * 100U) / float(m_rfBits), m_minRSSI, m_maxRSSI, m_aveRSSI / int(m_rssiCountTotal));
+		} else {
 			LogMessage("M17, received RF end of transmission from %s to %s, %.1f seconds, BER: %.1f%%", m_source.c_str(), m_dest.c_str(), float(m_rfFrames) / 25.0F, float(m_rfErrs * 100U) / float(m_rfBits));
+			writeJSONRF("end", float(m_rfFrames) / 25.0F, float(m_rfErrs * 100U) / float(m_rfBits));
+		}
 		writeEndRF();
 
 		return true;
@@ -503,15 +525,9 @@ void CM17Control::writeEndRF()
 	m_rfCollectedLSF.reset();
 
 	if (m_netState == RPT_NET_STATE::IDLE) {
-		m_display->clearM17();
-
 		if (m_network != nullptr)
 			m_network->reset();
 	}
-
-#if defined(DUMP_M17)
-	closeFile();
-#endif
 }
 
 void CM17Control::writeEndNet()
@@ -525,8 +541,6 @@ void CM17Control::writeEndNet()
 	m_dest.clear();
 
 	m_netLSF.reset();
-
-	m_display->clearM17();
 
 	if (m_network != nullptr)
 		m_network->reset();
@@ -574,22 +588,23 @@ void CM17Control::writeNetwork()
 		case M17_DATA_TYPE_DATA:
 			LogMessage("M17, received network data transmission from %s to %s", m_source.c_str(), m_dest.c_str());
 			m_netState = RPT_NET_STATE::DATA;
+			writeJSONNet("start", m_netState, m_source, m_dest);
 			break;
 		case M17_DATA_TYPE_VOICE:
 			LogMessage("M17, received network voice transmission from %s to %s", m_source.c_str(), m_dest.c_str());
 			m_netState = RPT_NET_STATE::AUDIO;
+			writeJSONNet("start", m_netState, m_source, m_dest);
 			break;
 		case M17_DATA_TYPE_VOICE_DATA:
 			LogMessage("M17, received network voice + data transmission from %s to %s", m_source.c_str(), m_dest.c_str());
 			m_netState = RPT_NET_STATE::DATA_AUDIO;
+			writeJSONNet("start", m_netState, m_source, m_dest);
 			break;
 		default:
 			LogMessage("M17, received network unknown transmission from %s to %s", m_source.c_str(), m_dest.c_str());
 			m_network->reset();
 			return;
 		}
-
-		m_display->writeM17(m_source.c_str(), m_dest.c_str(), "N");
 
 		m_netTimeoutTimer.start();
 		m_elapsed.start();
@@ -657,6 +672,7 @@ void CM17Control::writeNetwork()
 
 				if (m_netTextBits == 0x11U || m_netTextBits == 0x33U || m_netTextBits == 0x77U || m_netTextBits == 0xFFU) {
 					LogMessage("M17, text Data: \"%s\"", m_netText);
+					writeJSONText(m_netText);
 					m_netTextBits = 0x00U;
 				}
 			}
@@ -717,6 +733,7 @@ void CM17Control::writeNetwork()
 		uint16_t fn = (netData[28U] << 8) + (netData[29U] << 0);
 		if ((fn & 0x8000U) == 0x8000U) {
 			LogMessage("M17, received network end of transmission from %s to %s, %.1f seconds", m_source.c_str(), m_dest.c_str(), float(m_netFrames) / 25.0F);
+			writeJSONNet("end", float(m_netFrames) / 25.0F);
 
 			unsigned char data[M17_FRAME_LENGTH_BYTES + 2U];
 
@@ -752,6 +769,7 @@ bool CM17Control::processRFHeader(bool lateEntry)
 		if (type != M17_ENCRYPTION_TYPE_NONE) {
 			LogMessage("M17, access attempt with encryption from %s to %s", m_source.c_str(), m_dest.c_str());
 			m_rfState = RPT_RF_STATE::REJECTED;
+			writeJSONRF("rejected", RPT_RF_STATE::AUDIO, m_source, m_dest);
 			return true;
 		}
 	}
@@ -761,6 +779,7 @@ bool CM17Control::processRFHeader(bool lateEntry)
 		if (!ret) {
 			LogMessage("M17, invalid access attempt from %s to %s", m_source.c_str(), m_dest.c_str());
 			m_rfState = RPT_RF_STATE::REJECTED;
+			writeJSONRF("rejected", RPT_RF_STATE::AUDIO, m_source, m_dest);
 			return true;
 		}
 	}
@@ -770,20 +789,21 @@ bool CM17Control::processRFHeader(bool lateEntry)
 	case M17_DATA_TYPE_DATA:
 		LogMessage("M17, received RF%sdata transmission from %s to %s", lateEntry ? " late entry " : " ", m_source.c_str(), m_dest.c_str());
 		m_rfState = RPT_RF_STATE::DATA;
+		writeJSONRF(lateEntry ? "late_entry" : "start", m_rfState, m_source, m_dest);
 		break;
 	case M17_DATA_TYPE_VOICE:
 		LogMessage("M17, received RF%svoice transmission from %s to %s", lateEntry ? " late entry " : " ", m_source.c_str(), m_dest.c_str());
 		m_rfState = RPT_RF_STATE::AUDIO;
+		writeJSONRF(lateEntry ? "late_entry" : "start", m_rfState, m_source, m_dest);
 		break;
 	case M17_DATA_TYPE_VOICE_DATA:
 		LogMessage("M17, received RF%svoice + data transmission from %s to %s", lateEntry ? " late entry " : " ", m_source.c_str(), m_dest.c_str());
 		m_rfState = RPT_RF_STATE::DATA_AUDIO;
+		writeJSONRF(lateEntry ? "late_entry" : "start", m_rfState, m_source, m_dest);
 		break;
 	default:
 		return false;
 	}
-
-	m_display->writeM17(m_source.c_str(), m_dest.c_str(), "R");
 
 	createRFLSF(true);
 
@@ -839,7 +859,7 @@ void CM17Control::clock(unsigned int ms)
 		writeNetwork();
 
 	if (!m_enabled)
-	  return;
+		return;
 
 	m_rfTimeoutTimer.clock(ms);
 	m_netTimeoutTimer.clock(ms);
@@ -849,6 +869,7 @@ void CM17Control::clock(unsigned int ms)
 
 		if (m_networkWatchdog.hasExpired()) {
 			LogMessage("M17, network watchdog has expired, %.1f seconds", float(m_netFrames) / 25.0F);
+			writeJSONNet("lost", float(m_netFrames) / 25.0F);
 			writeEndNet();
 		}
 	}
@@ -927,46 +948,6 @@ bool CM17Control::checkCallsign(const std::string& callsign) const
 	return m_callsign.compare(0U, len, callsign, 0U, len) == 0;
 }
 
-bool CM17Control::openFile()
-{
-	if (m_fp != nullptr)
-		return true;
-
-	time_t t;
-	::time(&t);
-
-	struct tm* tm = ::localtime(&t);
-
-	char name[100U];
-	::sprintf(name, "M17_%04d%02d%02d_%02d%02d%02d.ambe", tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec);
-
-	m_fp = ::fopen(name, "wb");
-	if (m_fp == nullptr)
-		return false;
-
-	::fwrite("M17", 1U, 3U, m_fp);
-
-	return true;
-}
-
-bool CM17Control::writeFile(const unsigned char* data)
-{
-	if (m_fp == nullptr)
-		return false;
-
-	::fwrite(data, 1U, M17_FRAME_LENGTH_BYTES, m_fp);
-
-	return true;
-}
-
-void CM17Control::closeFile()
-{
-	if (m_fp != nullptr) {
-		::fclose(m_fp);
-		m_fp = nullptr;
-	}
-}
-
 bool CM17Control::isBusy() const
 {
 	return (m_rfState != RPT_RF_STATE::LISTENING) || (m_netState != RPT_NET_STATE::IDLE);
@@ -985,9 +966,8 @@ void CM17Control::enable(bool enabled)
 			break;
 
 		default:
-			if (m_rfTimeoutTimer.isRunning()) {
+			if (m_rfTimeoutTimer.isRunning())
 				LogMessage("M17, RF user has timed out");
-			}
 			break;
 		}
 		m_rfState = RPT_RF_STATE::LISTENING;
@@ -1000,9 +980,8 @@ void CM17Control::enable(bool enabled)
 			break;
 
 		default:
-			if (m_netTimeoutTimer.isRunning()) {
+			if (m_netTimeoutTimer.isRunning())
 				LogMessage("M17, network user has timed out");
-			}
 			break;
 		}
 		m_netState = RPT_NET_STATE::IDLE;
@@ -1013,3 +992,203 @@ void CM17Control::enable(bool enabled)
 
 	m_enabled = enabled;
 }
+
+void CM17Control::writeJSONRSSI()
+{
+	if (m_rssi == 0)
+		return;
+
+	if (m_rssiCount >= RSSI_COUNT) {
+		nlohmann::json json;
+
+		json["timestamp"] = CUtils::createTimestamp();
+		json["mode"]      = "M17";
+
+		json["value"]     = m_rssiAccum / int(m_rssiCount);
+
+		WriteJSON("RSSI", json);
+
+		m_rssiAccum = 0;
+		m_rssiCount = 0U;
+	}
+}
+
+void CM17Control::writeJSONBER()
+{
+	if (m_bitsCount >= BER_COUNT) {
+		nlohmann::json json;
+
+		json["timestamp"] = CUtils::createTimestamp();
+		json["mode"]      = "M17";
+
+		json["value"]     = float(m_bitErrsAccum * 100U) / float(m_bitsCount);
+
+		WriteJSON("BER", json);
+
+		m_bitErrsAccum = 0U;
+		m_bitsCount    = 1U;
+	}
+}
+
+void CM17Control::writeJSONText(const char* text)
+{
+	assert(text != nullptr);
+
+	nlohmann::json json;
+
+	json["timestamp"] = CUtils::createTimestamp();
+	json["mode"]      = "M17";
+
+	json["value"]     = std::string(text);
+
+	WriteJSON("Text", json);
+}
+
+void CM17Control::writeJSONRF(const char* action, RPT_RF_STATE state, const std::string& source, const std::string& dest)
+{
+	assert(action != nullptr);
+
+	nlohmann::json json;
+
+	writeJSONRF(json, action, state, source, dest);
+
+	WriteJSON("M17", json);
+}
+
+void CM17Control::writeJSONRF(const char* action, float duration, float ber)
+{
+	assert(action != nullptr);
+
+	nlohmann::json json;
+
+	writeJSONRF(json, action, duration, ber);
+
+	WriteJSON("M17", json);
+}
+
+void CM17Control::writeJSONRF(const char* action, float duration, float ber, int minRSSI, int maxRSSI, int aveRSSI)
+{
+	assert(action != nullptr);
+
+	nlohmann::json json;
+
+	writeJSONRF(json, action, duration, ber);
+
+	nlohmann::json rssi;
+	rssi["min"] = minRSSI;
+	rssi["max"] = maxRSSI;
+	rssi["ave"] = aveRSSI;
+
+	json["rssi"] = rssi;
+
+	WriteJSON("M17", json);
+}
+
+void CM17Control::writeJSONNet(const char* action, RPT_NET_STATE state, const std::string& source, const std::string& dest)
+{
+	assert(action != nullptr);
+
+	nlohmann::json json;
+
+	writeJSONNet(json, action, state, source, dest);
+
+	WriteJSON("M17", json);
+}
+
+void CM17Control::writeJSONNet(const char* action, float duration)
+{
+	assert(action != nullptr);
+
+	nlohmann::json json;
+
+	writeJSONNet(json, action);
+
+	json["duration"] = duration;
+
+	WriteJSON("M17", json);
+}
+
+void CM17Control::writeJSONRF(nlohmann::json& json, const char* action)
+{
+	assert(action != nullptr);
+
+	json["timestamp"] = CUtils::createTimestamp();
+
+	json["action"] = action;
+}
+
+void CM17Control::writeJSONRF(nlohmann::json& json, const char* action, RPT_RF_STATE state, const std::string& source, const std::string& dest)
+{
+	assert(action != nullptr);
+
+	json["timestamp"] = CUtils::createTimestamp();
+
+	json["src_callsign"] = source;
+	json["dst_callsign"] = dest;
+
+	json["source"] = "rf";
+	json["action"] = action;
+
+	switch (state) {
+		case RPT_RF_STATE::AUDIO:
+			json["traffic_type"] = "audio";
+			break;
+		case RPT_RF_STATE::DATA_AUDIO:
+			json["traffic_type"] = "audio_data";
+			break;
+		case RPT_RF_STATE::DATA:
+			json["traffic_type"] = "data";
+			break;
+		default:
+			break;
+	}
+}
+
+void CM17Control::writeJSONRF(nlohmann::json& json, const char* action, float duration, float ber)
+{
+	assert(action != nullptr);
+
+	writeJSONRF(json, action);
+
+	json["duration"] = duration;
+	json["ber"]      = ber;
+}
+
+void CM17Control::writeJSONNet(nlohmann::json& json, const char* action)
+{
+	assert(action != nullptr);
+
+	json["timestamp"] = CUtils::createTimestamp();
+
+	json["action"] = action;
+}
+
+void CM17Control::writeJSONNet(nlohmann::json& json, const char* action, RPT_NET_STATE state, const std::string& source, const std::string& dest)
+{
+	assert(action != nullptr);
+
+	json["timestamp"] = CUtils::createTimestamp();
+
+	json["src_callsign"] = source;
+	json["dst_callsign"] = dest;
+
+	json["source"] = "network";
+	json["action"] = action;
+
+	switch (state) {
+		case RPT_NET_STATE::AUDIO:
+			json["traffic_type"] = "audio";
+			break;
+		case RPT_NET_STATE::DATA_AUDIO:
+			json["traffic_type"] = "audio_data";
+			break;
+		case RPT_NET_STATE::DATA:
+			json["traffic_type"] = "data";
+			break;
+		default:
+			break;
+	}
+}
+
+#endif
+

@@ -22,6 +22,8 @@
 #include "CRC.h"
 #include "Log.h"
 
+#if defined(USE_DSTAR)
+
 #include <cstdio>
 #include <cassert>
 #include <cstring>
@@ -67,7 +69,7 @@ void CDStarSlowData::add(const unsigned char* data)
 		m_buffer[5U] = data[11U] ^ DSTAR_SCRAMBLER_BYTES[2U];
 		m_state = SDD_STATE::FIRST;
 		m_complete = true;
-		CUtils::dump(1U, "D-Star slow data element", m_buffer, 6U);
+		// CUtils::dump(1U, "D-Star slow data element", m_buffer, 6U);
 		loadHeader();
 		loadText();
 		break;
@@ -99,8 +101,8 @@ CDStarHeader* CDStarSlowData::getHeader()
 	// Check the CRC
 	bool ret = CCRC::checkCCITT161(m_header, DSTAR_HEADER_LENGTH_BYTES);
 	if (!ret) {
-		if (m_ptr == 45U)
-			LogMessage("D-Star, invalid slow data header");
+		// if (m_ptr == 45U)
+		//	LogMessage("D-Star, invalid slow data header");
 		return nullptr;
 	}
 
@@ -111,7 +113,7 @@ void CDStarSlowData::loadText()
 {
 	switch (m_buffer[0U]) {
 	case DSTAR_SLOW_DATA_TYPE_TEXT | 0U:
-		CUtils::dump(1U, "D-Star slow data text fragment 0", m_buffer, 6U);
+		// CUtils::dump(1U, "D-Star slow data text fragment 0", m_buffer, 6U);
 		m_text[0U] = m_buffer[1U] & 0x7FU;
 		m_text[1U] = m_buffer[2U] & 0x7FU;
 		m_text[2U] = m_buffer[3U] & 0x7FU;
@@ -121,7 +123,7 @@ void CDStarSlowData::loadText()
 		break;
 
 	case DSTAR_SLOW_DATA_TYPE_TEXT | 1U:
-		CUtils::dump(1U, "D-Star slow data text fragment 1", m_buffer, 6U);
+		// CUtils::dump(1U, "D-Star slow data text fragment 1", m_buffer, 6U);
 		m_text[5U] = m_buffer[1U] & 0x7FU;
 		m_text[6U] = m_buffer[2U] & 0x7FU;
 		m_text[7U] = m_buffer[3U] & 0x7FU;
@@ -131,7 +133,7 @@ void CDStarSlowData::loadText()
 		break;
 
 	case DSTAR_SLOW_DATA_TYPE_TEXT | 2U:
-		CUtils::dump(1U, "D-Star slow data text fragment 2", m_buffer, 6U);
+		// CUtils::dump(1U, "D-Star slow data text fragment 2", m_buffer, 6U);
 		m_text[10U] = m_buffer[1U] & 0x7FU;
 		m_text[11U] = m_buffer[2U] & 0x7FU;
 		m_text[12U] = m_buffer[3U] & 0x7FU;
@@ -141,7 +143,7 @@ void CDStarSlowData::loadText()
 		break;
 
 	case DSTAR_SLOW_DATA_TYPE_TEXT | 3U:
-		CUtils::dump(1U, "D-Star slow data text fragment 3", m_buffer, 6U);
+		// CUtils::dump(1U, "D-Star slow data text fragment 3", m_buffer, 6U);
 		m_text[15U] = m_buffer[1U] & 0x7FU;
 		m_text[16U] = m_buffer[2U] & 0x7FU;
 		m_text[17U] = m_buffer[3U] & 0x7FU;
@@ -161,7 +163,7 @@ const unsigned char* CDStarSlowData::getText()
 	if (m_textBits != 0x0FU)
 		return nullptr;
 
-	CUtils::dump(1U, "D-Star slow data text", m_text, 20U);
+	// CUtils::dump(1U, "D-Star slow data text", m_text, 20U);
 
 	m_textBits = 0x00U;
 
@@ -237,12 +239,14 @@ void CDStarSlowData::getSlowData(unsigned char* data)
 	}
 }
 
-unsigned char CDStarSlowData::getType() const
+unsigned char CDStarSlowData::getType(bool unmasked) const
 {
-	return m_buffer[0U] & DSTAR_SLOW_DATA_TYPE_MASK;
+	return unmasked ? m_buffer[0U] : m_buffer[0U] & DSTAR_SLOW_DATA_TYPE_MASK ;
 }
 
 bool CDStarSlowData::isComplete() const
 {
 	return m_complete;
 }
+
+#endif

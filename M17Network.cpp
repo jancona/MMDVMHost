@@ -19,9 +19,10 @@
 #include "M17Network.h"
 #include "M17Defines.h"
 #include "M17Utils.h"
-#include "Defines.h"
 #include "Utils.h"
 #include "Log.h"
+
+#if defined(USE_M17)
 
 #include <cstdio>
 #include <cassert>
@@ -215,3 +216,6 @@ void CM17Network::sendPing()
 
 	m_socket.write(buffer, 4U, m_addr, m_addrLen);
 }
+
+#endif
+

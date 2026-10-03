@@ -1,5 +1,5 @@
 /*
- *   Copyright (C) 2020,2021 by Jonathan Naylor G4KLX
+ *   Copyright (C) 2020-2023 by Jonathan Naylor G4KLX
  *
  *   This program is free software; you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -24,17 +24,20 @@
 #include "M17Defines.h"
 #include "RingBuffer.h"
 #include "StopWatch.h"
-#include "Display.h"
 #include "Defines.h"
 #include "M17LSF.h"
 #include "Timer.h"
 #include "Modem.h"
 
+#if defined(USE_M17)
+
 #include <string>
+
+#include <nlohmann/json.hpp>
 
 class CM17Control {
 public:
-	CM17Control(const std::string& callsign, unsigned int can, bool selfOnly, bool allowEncryption, CM17Network* network, CDisplay* display, unsigned int timeout, bool duplex, CRSSIInterpolator* rssiMapper);
+	CM17Control(const std::string& callsign, unsigned int can, bool selfOnly, bool allowEncryption, CM17Network* network, unsigned int timeout, bool duplex, CRSSIInterpolator* rssiMapper);
 	~CM17Control();
 
 	bool writeModem(unsigned char* data, unsigned int len);
@@ -53,7 +56,6 @@ private:
 	bool                       m_selfOnly;
 	bool                       m_allowEncryption;
 	CM17Network*               m_network;
-	CDisplay*                  m_display;
 	bool                       m_duplex;
 	CRingBuffer<unsigned char> m_queue;
 	std::string                m_source;
@@ -81,13 +83,16 @@ private:
 	char*                      m_rfText;
 	char*                      m_netText;
 	CRSSIInterpolator*         m_rssiMapper;
-	unsigned char              m_rssi;
-	unsigned char              m_maxRSSI;
-	unsigned char              m_minRSSI;
-	unsigned int               m_aveRSSI;
+	int                        m_rssi;
+	int                        m_maxRSSI;
+	int                        m_minRSSI;
+	int                        m_aveRSSI;
+	unsigned int               m_rssiCountTotal;
+	int                        m_rssiAccum;
 	unsigned int               m_rssiCount;
+	unsigned int               m_bitsCount;
+	unsigned int               m_bitErrsAccum;
 	bool                       m_enabled;
-	FILE*                      m_fp;
 
 	bool processRFHeader(bool lateEntry);
 
@@ -107,9 +112,25 @@ private:
 	void writeEndRF();
 	void writeEndNet();
 
-	bool openFile();
-	bool writeFile(const unsigned char* data);
-	void closeFile();
+	void writeJSONRSSI();
+	void writeJSONBER();
+	void writeJSONText(const char* text);
+
+	void writeJSONRF(const char* action, RPT_RF_STATE state, const std::string& source, const std::string& dest);
+	void writeJSONRF(const char* action, float duration, float ber);
+	void writeJSONRF(const char* action, float duration, float ber, int minRSSI, int maxRSSI, int aveRSSI);
+
+	void writeJSONNet(const char* action, RPT_NET_STATE state, const std::string& source, const std::string& dest);
+	void writeJSONNet(const char* action, float duration);
+
+	void writeJSONRF(nlohmann::json& json, const char* action, RPT_RF_STATE state, const std::string& source, const std::string& dest);
+	void writeJSONRF(nlohmann::json& json, const char* action);
+	void writeJSONRF(nlohmann::json& json, const char* action, float duration, float ber);
+	void writeJSONNet(nlohmann::json& json, const char* action);
+	void writeJSONNet(nlohmann::json& json, const char* action, RPT_NET_STATE state, const std::string& source, const std::string& dest);
 };
 
 #endif
+
+#endif
+

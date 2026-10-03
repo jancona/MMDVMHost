@@ -20,6 +20,9 @@
 #define	DStarSlowData_H
 
 #include "DStarHeader.h"
+#include "Defines.h"
+
+#if defined(USE_DSTAR)
 
 class CDStarSlowData {
 public:
@@ -30,7 +33,7 @@ public:
 
 	CDStarHeader*        getHeader();
 	const unsigned char* getText();
-	unsigned char        getType() const;
+	unsigned char        getType(bool unmasked = false) const;
 
 	bool isComplete() const;
 
@@ -61,3 +64,6 @@ private:
 };
 
 #endif
+
+#endif
+
